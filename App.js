@@ -1,34 +1,54 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   StyleSheet, Text, View, TextInput, TouchableOpacity, 
-  Vibration, Alert, StatusBar, Keyboard, TouchableWithoutFeedback 
+  Vibration, StatusBar, Keyboard, TouchableWithoutFeedback, Animated, Alert
 } from 'react-native';
-import axios from 'axios';
-import { MaterialCommunityIcons } from '@expo/vector-icons'; // Built-in Expo icons
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import * as Notifications from 'expo-notifications';
 
-// --- 🔧 CONFIGURATION (PASTE YOUR KEYS HERE) ---
-const BIN_ID = "695acf51ae596e708fc4ecfc "; 
-const API_KEY = "$2a$10$IXXZdh5uiJywWy24RsMjxeuh9xTdVFnZ2SpmOK6//ygvWrQwasDza";
-const START_DATE = new Date("2025-03-23T00:00:00"); // Relationship Start
-// -----------------------------------------------
+// --- FIREBASE IMPORTS ---
+import { initializeApp } from "firebase/app";
+import { getDatabase, ref, onValue, update } from "firebase/database";
 
-const API_URL = `https://api.jsonbin.io/v3/b/${BIN_ID}`;
-const HEADERS = {
-  'Content-Type': 'application/json',
-  'X-Master-Key': API_KEY
+// --- FIREBASE CONFIGURATION ---
+const firebaseConfig = {
+  apiKey: "AIzaSyBAUlgxwgu-IUJ4cMP22JxZe_qStAEWWrc",
+  authDomain: "minyass-93949.firebaseapp.com",
+  databaseURL: "https://minyass-93949-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "minyass-93949",
+  storageBucket: "minyass-93949.firebasestorage.app",
+  messagingSenderId: "970786227314",
+  appId: "1:970786227314:web:066cac7b3d75dd4532eeeb",
+  measurementId: "G-WQEL3FQQPF"
 };
 
-// Dark Theme Colors
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+
+// --- NOTIFICATIONS CONFIG ---
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
+
+// --- COSMIC THEME COLORS ---
 const COLORS = {
-  bg: '#121212',
-  card: '#1E1E1E',
+  bgStart: '#0B0D17', // Deep Space Black
+  bgEnd: '#240b36',   // Deep Cosmic Purple
+  cardBg: 'rgba(30, 30, 40, 0.7)', // Glassmorphism
   text: '#E0E0E0',
   subText: '#A0A0A0',
-  accent: '#FF4081', // Pink
-  primary: '#2196F3', // Blue
-  success: '#00E676', // Green
-  danger: '#FF5252', // Red
-  input: '#2C2C2C'
+  accent: '#FF007F', // Neon Pink
+  primary: '#00F0FF', // Neon Cyan
+  success: '#00E676', // Neon Green
+  danger: '#FF5252', // Neon Red
+  input: 'rgba(255, 255, 255, 0.1)',
+  border: 'rgba(255, 255, 255, 0.1)'
 };
 
 export default function App() {
@@ -37,118 +57,151 @@ export default function App() {
   const [timer, setTimer] = useState("");
   const [partnerMood, setPartnerMood] = useState("Unknown");
   const [note, setNote] = useState("");
-  const [nextVisit, setNextVisit] = useState("Not set"); 
-  const [isSleeping, setIsSleeping] = useState(false);
-  const [lastHeartTime, setLastHeartTime] = useState(0);
+  const [startDate, setStartDate] = useState(new Date("2025-03-23T00:00:00"));
+
+  // Local Input State for Settings (prevents jumping while typing)
+  const [dateInput, setDateInput] = useState(startDate.toISOString());
+
+  const [lastHeartTime, setLastHeartTime] = useState(0); // For rendering/state
   const [isSending, setIsSending] = useState(false);
 
-  // --- 1. TIMERS LOGIC ---
+  // Refs for logic to avoid re-renders or effect dependency loops
+  const lastHeartTimeRef = useRef(0);
+
+  // Animations
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+
+  // --- 1. SETUP & LISTENER ---
+  useEffect(() => {
+    // Start fade in animation
+    Animated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 1000,
+      useNativeDriver: true
+    }).start();
+
+    // Start Heartbeat Animation
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, { toValue: 1.15, duration: 800, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1, duration: 800, useNativeDriver: true })
+      ])
+    ).start();
+
+    // Firebase Listener
+    const dataRef = ref(db, 'minyass');
+    const unsubscribe = onValue(dataRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        if (data.mood) setPartnerMood(data.mood);
+        if (data.note) setNote(data.note);
+
+        if (data.startDate) {
+          const newDate = new Date(data.startDate);
+          setStartDate(newDate);
+          // Only update input if it's not focused/being edited (simplified: just update it)
+          // Ideally check focus, but for now we sync it to ensure consistency
+          setDateInput(newDate.toISOString());
+        }
+
+        // Heartbeat Logic using Ref to prevent re-subscription
+        if (data.heartTimestamp && data.heartTimestamp > lastHeartTimeRef.current) {
+          // If this is the VERY first load (lastHeartTimeRef is 0), don't vibrate.
+          // Or if the timestamp is fresh (within last 10 seconds), vibrate.
+          const isFresh = (Date.now() - data.heartTimestamp) < 10000;
+
+          if (lastHeartTimeRef.current !== 0 && isFresh) {
+             triggerVibration();
+          }
+          lastHeartTimeRef.current = data.heartTimestamp;
+          setLastHeartTime(data.heartTimestamp);
+        }
+      } else {
+        // Initialize if empty
+        update(ref(db, 'minyass'), {
+          mood: "Waiting...",
+          note: "Welcome to our cosmic space.",
+          startDate: "2025-03-23T00:00:00",
+          heartTimestamp: 0
+        });
+      }
+    });
+
+    return () => unsubscribe();
+  }, []); // Empty dependency array ensures stable listener
+
+  // --- 2. TIMER LOGIC ---
   useEffect(() => {
     const interval = setInterval(() => {
       const now = new Date();
-      
-      // Count UP (Together)
-      const diff = now - START_DATE;
-      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-      const hours = Math.floor((diff / (1000 * 60 * 60)) % 24);
-      const mins = Math.floor((diff / 1000 / 60) % 60);
-      setTimer(`${days}d ${hours}h ${mins}m`);
-
+      const diff = now - startDate;
+      if (diff > 0) {
+        const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+        const hours = Math.floor((diff / (1000 * 60 * 60)) % 24);
+        const mins = Math.floor((diff / 1000 / 60) % 60);
+        const secs = Math.floor((diff / 1000) % 60);
+        setTimer(`${days}d ${hours}h ${mins}m ${secs}s`);
+      } else {
+        setTimer("Soon...");
+      }
     }, 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [startDate]);
 
-  // --- 2. POLLING (SYNC) LOGIC ---
-  useEffect(() => {
-    const pollInterval = setInterval(() => checkForUpdates(), 5000);
-    return () => clearInterval(pollInterval);
-  }, [lastHeartTime]);
+  const triggerVibration = async () => {
+    Vibration.vibrate([0, 100, 100, 100]); // Heartbeat pattern
 
-  const checkForUpdates = async () => {
-    try {
-      const response = await axios.get(API_URL, { headers: HEADERS });
-      const data = response.data.record;
-
-      // Update basic fields
-      if (data.mood) setPartnerMood(data.mood);
-      if (data.is_sleeping !== undefined) setIsSleeping(data.is_sleeping);
-      if (data.next_visit) setNextVisit(data.next_visit);
-      
-      // Update Note (only if we aren't editing it currently)
-      // Simple check: If note is drastically different, update it.
-      if (data.note && data.note !== note && !isSending) {
-         setNote(data.note);
-      }
-
-      // HEART LOGIC (Fix: Only vibrate if timestamp is NEW and NOT from me)
-      // Since we can't easily identify "me" vs "them" without login, 
-      // we rely on local state "lastHeartTime" being up to date.
-      if (data.heart_timestamp > lastHeartTime && lastHeartTime !== 0) {
-        // Double check: Did *I* just send this? 
-        // If the server time is almost identical to a local "sent" time, we skip.
-        // For simplicity: We just vibrate. 
-        triggerVibration();
-      }
-      
-      if (data.heart_timestamp > lastHeartTime) {
-         setLastHeartTime(data.heart_timestamp);
-      }
-
-    } catch (error) {
-      console.log("Polling silent fail");
-    }
+    // Show Local Notification
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: "❤️ LoveSync",
+        body: "Partner sent some love!",
+        sound: true,
+      },
+      trigger: null,
+    });
   };
 
-  const triggerVibration = () => {
-    // Heartbeat pattern: bum-bum ... bum-bum
-    Vibration.vibrate([0, 100, 100, 100]); 
-    // If you want an alert box (optional, can be annoying if app is open)
-    // Alert.alert("❤️", "Partner sent love!"); 
-  };
-
-  const sendUpdate = async (key, value) => {
+  const sendUpdate = (key, value) => {
     setIsSending(true);
-    try {
-      // Fetch latest first to merge
-      const current = await axios.get(API_URL, { headers: HEADERS });
-      let payload = current.data.record;
+    const updates = {};
+    updates[key] = value;
 
-      // Update specific key
-      payload[key] = value;
-      
-      // If sending heart, track timestamp immediately to prevent self-vibration
-      if (key === 'heart_timestamp') {
-        setLastHeartTime(value);
-      }
-
-      await axios.put(API_URL, payload, { headers: HEADERS });
-      
-    } catch (error) {
-      Alert.alert("Sync Error", "Check connection");
+    // If sending heart, update local timestamp too to avoid self-notification race
+    if (key === 'heartTimestamp') {
+      lastHeartTimeRef.current = value;
+      setLastHeartTime(value);
+      // Visual feedback
+      Alert.alert("❤️ Sent", "Your love is travelling through space...");
     }
-    setIsSending(false);
+
+    update(ref(db, 'minyass'), updates)
+      .then(() => setIsSending(false))
+      .catch((err) => {
+        console.error(err);
+        setIsSending(false);
+      });
   };
 
-  // --- SCREENS ---
+  // --- RENDERERS ---
 
   const renderHome = () => (
     <View style={styles.centerContent}>
-      <View style={styles.timerCircle}>
-        <Text style={styles.timerLabel}>TOGETHER FOR</Text>
+      <View style={styles.timerContainer}>
+        <Text style={styles.timerLabel}>TOGETHER IN THE COSMOS</Text>
         <Text style={styles.timerText}>{timer}</Text>
       </View>
 
       <TouchableOpacity 
-        style={styles.heartBtn} 
-        activeOpacity={0.7}
-        onPress={() => {
-          Alert.alert("❤️ Sent", "Sending a heartbeat...");
-          sendUpdate('heart_timestamp', Date.now());
-        }}
+        activeOpacity={0.8}
+        onPress={() => sendUpdate('heartTimestamp', Date.now())}
       >
-        <MaterialCommunityIcons name="heart" size={80} color="white" />
+        <Animated.View style={[styles.heartBtn, { transform: [{ scale: pulseAnim }] }]}>
+           <MaterialCommunityIcons name="heart" size={80} color="white" />
+        </Animated.View>
       </TouchableOpacity>
-      <Text style={styles.hint}>Tap to send love</Text>
+      <Text style={styles.hint}>Tap to send a pulse</Text>
     </View>
   );
 
@@ -156,23 +209,26 @@ export default function App() {
     <View style={styles.scrollContent}>
       {/* STATUS CARD */}
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>Status Check</Text>
+        <Text style={styles.cardTitle}>Status Signal</Text>
         <View style={styles.row}>
-          <Text style={{color: COLORS.subText}}>Partner is:</Text>
-          <Text style={{color: COLORS.accent, fontWeight:'bold', fontSize: 18}}>
-            {partnerMood} {isSleeping ? "(💤 Asleep)" : ""}
+          <Text style={{color: COLORS.subText}}>Current Mood:</Text>
+          <Text style={{color: COLORS.primary, fontWeight:'bold', fontSize: 18, textShadowColor: COLORS.primary, textShadowRadius: 10}}>
+            {partnerMood}
           </Text>
         </View>
         
-        <Text style={[styles.cardTitle, {marginTop: 20}]}>My Status</Text>
+        <Text style={[styles.cardTitle, {marginTop: 25}]}>Broadcast Status</Text>
         <View style={styles.row}>
-           <TouchableOpacity style={[styles.statusBtn, {backgroundColor: COLORS.success}]} onPress={() => sendUpdate('mood', 'Happy 😊')}>
+           <TouchableOpacity style={[styles.statusBtn, {borderColor: COLORS.success}]} onPress={() => sendUpdate('mood', 'Happy 😊')}>
              <Text style={styles.emoji}>😊</Text>
            </TouchableOpacity>
-           <TouchableOpacity style={[styles.statusBtn, {backgroundColor: COLORS.primary}]} onPress={() => sendUpdate('mood', 'Miss You 🥺')}>
+           <TouchableOpacity style={[styles.statusBtn, {borderColor: COLORS.primary}]} onPress={() => sendUpdate('mood', 'Miss You 🥺')}>
              <Text style={styles.emoji}>🥺</Text>
            </TouchableOpacity>
-           <TouchableOpacity style={[styles.statusBtn, {backgroundColor: COLORS.danger}]} onPress={() => sendUpdate('mood', 'Tired 😴')}>
+           <TouchableOpacity style={[styles.statusBtn, {borderColor: COLORS.accent}]} onPress={() => sendUpdate('mood', 'Love You ❤️')}>
+             <Text style={styles.emoji}>❤️</Text>
+           </TouchableOpacity>
+           <TouchableOpacity style={[styles.statusBtn, {borderColor: COLORS.danger}]} onPress={() => sendUpdate('mood', 'Tired 😴')}>
              <Text style={styles.emoji}>😴</Text>
            </TouchableOpacity>
         </View>
@@ -180,22 +236,19 @@ export default function App() {
 
       {/* SHARED NOTE */}
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>Our Shared Note</Text>
+        <Text style={styles.cardTitle}>Cosmic Note</Text>
         <TextInput 
           style={styles.input} 
           multiline 
-          placeholder="Leave a message..."
-          placeholderTextColor="#555"
+          placeholder="Leave a message in the stars..."
+          placeholderTextColor="#666"
           value={note}
-          onChangeText={setNote}
+          onChangeText={(text) => {
+             setNote(text); // Local update
+          }}
+          onEndEditing={() => sendUpdate('note', note)} // Sync on finish
         />
-        <TouchableOpacity style={styles.saveBtn} onPress={() => {
-          Keyboard.dismiss();
-          sendUpdate('note', note);
-          Alert.alert("Saved", "Note updated for partner.");
-        }}>
-          <Text style={styles.btnText}>SYNC NOTE</Text>
-        </TouchableOpacity>
+        <Text style={styles.tinyText}>Auto-syncs when you finish typing</Text>
       </View>
     </View>
   );
@@ -203,25 +256,39 @@ export default function App() {
   const renderSettings = () => (
     <View style={styles.scrollContent}>
        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Next Meeting</Text>
+          <Text style={styles.cardTitle}>Timeline</Text>
+          <Text style={{color: COLORS.subText, marginBottom: 10}}>Start Date (ISO Format):</Text>
           <TextInput 
             style={styles.input} 
-            placeholder="e.g., Dec 25th 2026"
+            placeholder="YYYY-MM-DDTHH:mm:ss"
             placeholderTextColor="#555"
-            value={nextVisit}
-            onChangeText={setNextVisit} 
+            value={dateInput}
+            onChangeText={setDateInput} // Only updates local state
+            onEndEditing={() => {
+              // Validate and Send
+              try {
+                const d = new Date(dateInput);
+                if (!isNaN(d.getTime())) {
+                   sendUpdate('startDate', dateInput);
+                   setStartDate(d); // Optimistic update
+                } else {
+                   Alert.alert("Invalid Date", "Please use format YYYY-MM-DD");
+                   setDateInput(startDate.toISOString()); // Revert
+                }
+              } catch (e) {
+                 setDateInput(startDate.toISOString()); // Revert
+              }
+            }}
           />
-          <TouchableOpacity style={styles.saveBtn} onPress={() => sendUpdate('next_visit', nextVisit)}>
-             <Text style={styles.btnText}>UPDATE DATE</Text>
-          </TouchableOpacity>
+          <Text style={styles.tinyText}>Tap outside to save.</Text>
        </View>
 
        <View style={styles.card}>
-         <Text style={styles.cardTitle}>App Info</Text>
+         <Text style={styles.cardTitle}>System</Text>
          <Text style={{color: COLORS.subText, lineHeight: 22}}>
-           Build: v2.0 Dark Mode{'\n'}
-           Sync Status: {isSending ? "Syncing..." : "Active"}{'\n'}
-           Battery: Set to 'Unrestricted' for best results.
+           Connection: {isSending ? "Transmitting..." : "Stable"}{'\n'}
+           Version: Cosmic v1.0{'\n'}
+           Theme: Deep Space
          </Text>
        </View>
     </View>
@@ -230,36 +297,40 @@ export default function App() {
   return (
     <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
       <View style={styles.container}>
-        <StatusBar barStyle="light-content" backgroundColor={COLORS.bg} />
+        <StatusBar barStyle="light-content" />
+        <LinearGradient
+          colors={[COLORS.bgStart, COLORS.bgEnd]}
+          style={styles.background}
+        />
         
         {/* HEADER */}
-        <View style={styles.header}>
-          <Text style={styles.headerTitle}>Us Two</Text>
+        <Animated.View style={[styles.header, { opacity: fadeAnim }]}>
+          <Text style={styles.headerTitle}>Minyass</Text>
           {isSending && <View style={styles.dot} />}
-        </View>
+        </Animated.View>
 
         {/* MAIN CONTENT AREA */}
-        <View style={styles.content}>
+        <Animated.View style={[styles.content, { opacity: fadeAnim }]}>
           {activeTab === 'home' && renderHome()}
           {activeTab === 'space' && renderSpace()}
           {activeTab === 'settings' && renderSettings()}
-        </View>
+        </Animated.View>
 
         {/* BOTTOM NAVIGATION BAR */}
         <View style={styles.navBar}>
           <TouchableOpacity style={styles.navItem} onPress={() => setActiveTab('home')}>
             <MaterialCommunityIcons name="heart-pulse" size={28} color={activeTab === 'home' ? COLORS.accent : COLORS.subText} />
-            <Text style={[styles.navText, {color: activeTab === 'home' ? COLORS.accent : COLORS.subText}]}>Home</Text>
+            <Text style={[styles.navText, {color: activeTab === 'home' ? COLORS.accent : COLORS.subText}]}>Pulse</Text>
           </TouchableOpacity>
 
           <TouchableOpacity style={styles.navItem} onPress={() => setActiveTab('space')}>
-            <MaterialCommunityIcons name="message-text" size={28} color={activeTab === 'space' ? COLORS.accent : COLORS.subText} />
-            <Text style={[styles.navText, {color: activeTab === 'space' ? COLORS.accent : COLORS.subText}]}>Space</Text>
+            <MaterialCommunityIcons name="rocket-launch" size={28} color={activeTab === 'space' ? COLORS.primary : COLORS.subText} />
+            <Text style={[styles.navText, {color: activeTab === 'space' ? COLORS.primary : COLORS.subText}]}>Space</Text>
           </TouchableOpacity>
 
           <TouchableOpacity style={styles.navItem} onPress={() => setActiveTab('settings')}>
-            <MaterialCommunityIcons name="calendar-clock" size={28} color={activeTab === 'settings' ? COLORS.accent : COLORS.subText} />
-            <Text style={[styles.navText, {color: activeTab === 'settings' ? COLORS.accent : COLORS.subText}]}>Plan</Text>
+            <MaterialCommunityIcons name="cog" size={28} color={activeTab === 'settings' ? COLORS.text : COLORS.subText} />
+            <Text style={[styles.navText, {color: activeTab === 'settings' ? COLORS.text : COLORS.subText}]}>Config</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -268,53 +339,67 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: COLORS.bg },
-  header: { 
-    height: 80, paddingTop: 30, backgroundColor: COLORS.bg, 
-    alignItems: 'center', justifyContent: 'center', borderBottomWidth: 1, borderBottomColor: '#333' 
+  container: { flex: 1 },
+  background: {
+    position: 'absolute',
+    left: 0, right: 0, top: 0, bottom: 0,
   },
-  headerTitle: { fontSize: 22, fontWeight: 'bold', color: COLORS.text, letterSpacing: 2 },
-  dot: { position: 'absolute', right: 20, top: 45, width: 8, height: 8, borderRadius: 4, backgroundColor: COLORS.success },
+  header: { 
+    height: 90, paddingTop: 40,
+    alignItems: 'center', justifyContent: 'center',
+    borderBottomWidth: 1, borderBottomColor: COLORS.border
+  },
+  headerTitle: {
+    fontSize: 24, fontWeight: 'bold', color: COLORS.text, letterSpacing: 4,
+    textShadowColor: COLORS.accent, textShadowRadius: 10
+  },
+  dot: { position: 'absolute', right: 20, top: 55, width: 6, height: 6, borderRadius: 3, backgroundColor: COLORS.success },
   
   content: { flex: 1 },
   centerContent: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   scrollContent: { flex: 1, padding: 20 },
 
   // Home Styles
-  timerCircle: { 
-    width: 250, height: 250, borderRadius: 125, 
-    borderWidth: 4, borderColor: COLORS.card, 
-    alignItems: 'center', justifyContent: 'center', marginBottom: 40 
+  timerContainer: {
+    alignItems: 'center', marginBottom: 60,
+    backgroundColor: 'rgba(0,0,0,0.3)', padding: 20, borderRadius: 20,
+    borderWidth: 1, borderColor: COLORS.border
   },
-  timerLabel: { color: COLORS.subText, fontSize: 14, letterSpacing: 1, marginBottom: 5 },
-  timerText: { color: COLORS.text, fontSize: 28, fontWeight: 'bold' },
+  timerLabel: { color: COLORS.primary, fontSize: 12, letterSpacing: 2, marginBottom: 10, fontWeight: 'bold' },
+  timerText: { color: COLORS.text, fontSize: 32, fontWeight: '300', fontVariant: ['tabular-nums'] },
+
   heartBtn: {
-    backgroundColor: COLORS.accent, width: 120, height: 120, borderRadius: 60,
-    alignItems: 'center', justifyContent: 'center', elevation: 10, shadowColor: COLORS.accent, shadowOpacity: 0.5
+    backgroundColor: COLORS.accent, width: 140, height: 140, borderRadius: 70,
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: COLORS.accent, shadowOpacity: 0.8, shadowRadius: 20, elevation: 20,
+    borderWidth: 2, borderColor: '#fff'
   },
-  hint: { color: COLORS.subText, marginTop: 20 },
+  hint: { color: COLORS.subText, marginTop: 30, letterSpacing: 1 },
 
   // Space/Card Styles
-  card: { backgroundColor: COLORS.card, borderRadius: 15, padding: 20, marginBottom: 20 },
-  cardTitle: { color: COLORS.text, fontSize: 18, fontWeight: 'bold', marginBottom: 15 },
-  row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around' },
-  statusBtn: { width: 60, height: 60, borderRadius: 30, alignItems: 'center', justifyContent: 'center' },
-  emoji: { fontSize: 24 },
-  input: { 
-    backgroundColor: COLORS.input, color: COLORS.text, borderRadius: 10, 
-    padding: 15, height: 100, textAlignVertical: 'top', fontSize: 16 
+  card: {
+    backgroundColor: COLORS.cardBg, borderRadius: 20, padding: 25, marginBottom: 25,
+    borderWidth: 1, borderColor: COLORS.border,
+    shadowColor: "#000", shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.3, shadowRadius: 20,
   },
-  saveBtn: { 
-    backgroundColor: COLORS.card, borderWidth: 1, borderColor: COLORS.subText, 
-    marginTop: 10, padding: 12, borderRadius: 8, alignItems: 'center' 
+  cardTitle: { color: COLORS.text, fontSize: 18, fontWeight: 'bold', marginBottom: 15, letterSpacing: 1 },
+  row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', flexWrap: 'wrap', gap: 10 },
+  statusBtn: {
+    width: 65, height: 65, borderRadius: 32.5, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1
   },
-  btnText: { color: COLORS.text, fontWeight: 'bold' },
+  emoji: { fontSize: 28 },
+  input: {
+    backgroundColor: COLORS.input, color: COLORS.text, borderRadius: 15,
+    padding: 15, fontSize: 16, borderWidth: 1, borderColor: COLORS.border
+  },
+  tinyText: { color: COLORS.subText, fontSize: 10, marginTop: 8, textAlign: 'right' },
 
   // Navigation Styles
   navBar: { 
-    flexDirection: 'row', height: 70, backgroundColor: '#181818', 
-    borderTopWidth: 1, borderTopColor: '#333', paddingBottom: 10 
+    flexDirection: 'row', height: 80, backgroundColor: 'rgba(11, 13, 23, 0.95)',
+    borderTopWidth: 1, borderTopColor: COLORS.border, paddingBottom: 20, paddingTop: 10
   },
   navItem: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  navText: { fontSize: 12, marginTop: 4 }
+  navText: { fontSize: 10, marginTop: 4, fontWeight: 'bold', letterSpacing: 1 }
 });
