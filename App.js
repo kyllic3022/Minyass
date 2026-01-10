@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   StyleSheet, Text, View, TextInput, TouchableOpacity, 
-  Vibration, StatusBar, Keyboard, TouchableWithoutFeedback, Animated, Alert, Platform
+  Vibration, StatusBar, Keyboard, TouchableWithoutFeedback, Animated, Alert, Platform, AppState
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
+import Constants from 'expo-constants';
 
 // --- FIREBASE IMPORTS ---
 import { initializeApp } from "firebase/app";
@@ -68,6 +69,7 @@ export default function App() {
 
   // Refs for logic to avoid re-renders or effect dependency loops
   const lastHeartTimeRef = useRef(0);
+  const pushTokenRef = useRef(null);
 
   // Animations
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -75,22 +77,40 @@ export default function App() {
 
   // --- 0. REGISTER PUSH TOKEN ---
   useEffect(() => {
-    registerForPushNotificationsAsync().then(token => {
-      if (token) {
-        // Save token to Firebase under "users"
-        const cleanToken = token.replace(/[.#$\/[\]]/g, "_"); // sanitize key if needed (though standard push tokens are usually safe values, using the token itself as key can be long, better to just push it to a list or use device ID)
+    let isMounted = true;
 
-        // Simpler approach: Just store it under a generated ID or device ID
-        // Since we don't have auth, we'll just push it to a "tokens" list
-        // Note: In a real app, you'd associate this with a User ID.
-        // Here we just want to broadcast to "everyone else".
-        const tokenRef = ref(db, `minyass/tokens/${cleanToken}`);
-        update(tokenRef, {
-          token: token,
-          lastSeen: Date.now()
-        });
+    const upsertPushToken = async () => {
+      const token = await registerForPushNotificationsAsync();
+      if (!token || !isMounted) return;
+
+      // Save token to Firebase under "users"
+      const cleanToken = token.replace(/[.#$\/[\]]/g, "_"); // sanitize key if needed (though standard push tokens are usually safe values, using the token itself as key can be long, better to just push it to a list or use device ID)
+
+      // Simpler approach: Just store it under a generated ID or device ID
+      // Since we don't have auth, we'll just push it to a "tokens" list
+      // Note: In a real app, you'd associate this with a User ID.
+      // Here we just want to broadcast to "everyone else".
+      const tokenRef = ref(db, `minyass/tokens/${cleanToken}`);
+      await update(tokenRef, {
+        token: token,
+        lastSeen: Date.now()
+      });
+      pushTokenRef.current = token;
+
+    };
+
+    upsertPushToken();
+
+    const appStateSub = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        upsertPushToken();
       }
     });
+
+    return () => {
+      isMounted = false;
+      appStateSub.remove();
+    };
   }, []);
 
   // --- 1. SETUP & LISTENER ---
@@ -144,7 +164,8 @@ export default function App() {
           mood: "Waiting...",
           note: "Welcome to our cosmic space.",
           startDate: "2025-03-23T00:00:00",
-          heartTimestamp: 0
+          heartTimestamp: 0,
+          heartSenderToken: ""
         });
       }
     });
@@ -193,6 +214,9 @@ export default function App() {
     if (key === 'heartTimestamp') {
       lastHeartTimeRef.current = value;
       setLastHeartTime(value);
+      if (pushTokenRef.current) {
+        updates.heartSenderToken = pushTokenRef.current;
+      }
       // Visual feedback
       Alert.alert("❤️ Sent", "Your love is travelling through space...");
     }
@@ -219,7 +243,13 @@ export default function App() {
         Alert.alert('Permission needed', 'Failed to get push token for push notification!');
         return;
       }
-      token = (await Notifications.getExpoPushTokenAsync()).data;
+      const projectId =
+        Constants.expoConfig?.extra?.eas?.projectId ??
+        Constants.easConfig?.projectId;
+      const tokenResponse = projectId
+        ? await Notifications.getExpoPushTokenAsync({ projectId })
+        : await Notifications.getExpoPushTokenAsync();
+      token = tokenResponse.data;
       console.log("Expo Push Token:", token);
     } else {
       // Alert.alert('Notice', 'Must use physical device for Push Notifications');
