@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   StyleSheet, Text, View, TextInput, TouchableOpacity, 
-  Vibration, StatusBar, Keyboard, TouchableWithoutFeedback, Animated, Alert
+  Vibration, StatusBar, Keyboard, TouchableWithoutFeedback, Animated, Alert, Platform
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Notifications from 'expo-notifications';
+import * as Device from 'expo-device';
 
 // --- FIREBASE IMPORTS ---
 import { initializeApp } from "firebase/app";
@@ -71,6 +72,26 @@ export default function App() {
   // Animations
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
+
+  // --- 0. REGISTER PUSH TOKEN ---
+  useEffect(() => {
+    registerForPushNotificationsAsync().then(token => {
+      if (token) {
+        // Save token to Firebase under "users"
+        const cleanToken = token.replace(/[.#$\/[\]]/g, "_"); // sanitize key if needed (though standard push tokens are usually safe values, using the token itself as key can be long, better to just push it to a list or use device ID)
+
+        // Simpler approach: Just store it under a generated ID or device ID
+        // Since we don't have auth, we'll just push it to a "tokens" list
+        // Note: In a real app, you'd associate this with a User ID.
+        // Here we just want to broadcast to "everyone else".
+        const tokenRef = ref(db, `minyass/tokens/${cleanToken}`);
+        update(tokenRef, {
+          token: token,
+          lastSeen: Date.now()
+        });
+      }
+    });
+  }, []);
 
   // --- 1. SETUP & LISTENER ---
   useEffect(() => {
@@ -152,7 +173,7 @@ export default function App() {
   const triggerVibration = async () => {
     Vibration.vibrate([0, 100, 100, 100]); // Heartbeat pattern
 
-    // Show Local Notification
+    // Show Local Notification (still useful if app is foreground/background but running)
     await Notifications.scheduleNotificationAsync({
       content: {
         title: "❤️ LoveSync",
@@ -183,6 +204,38 @@ export default function App() {
         setIsSending(false);
       });
   };
+
+  // --- HELPER: REGISTER FOR PUSH ---
+  async function registerForPushNotificationsAsync() {
+    let token;
+    if (Device.isDevice) {
+      const { status: existingStatus } = await Notifications.getPermissionsAsync();
+      let finalStatus = existingStatus;
+      if (existingStatus !== 'granted') {
+        const { status } = await Notifications.requestPermissionsAsync();
+        finalStatus = status;
+      }
+      if (finalStatus !== 'granted') {
+        Alert.alert('Permission needed', 'Failed to get push token for push notification!');
+        return;
+      }
+      token = (await Notifications.getExpoPushTokenAsync()).data;
+      console.log("Expo Push Token:", token);
+    } else {
+      // Alert.alert('Notice', 'Must use physical device for Push Notifications');
+    }
+
+    if (Platform.OS === 'android') {
+      Notifications.setNotificationChannelAsync('default', {
+        name: 'default',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: '#FF231F7C',
+      });
+    }
+
+    return token;
+  }
 
   // --- RENDERERS ---
 

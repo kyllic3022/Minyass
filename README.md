@@ -8,6 +8,7 @@ A real-time relationship synchronization app built with **React Native (Expo)** 
 *   **Shared Space:** Sync moods (`Happy`, `Miss You`, etc.) and write shared notes.
 *   **Together Timer:** Tracks the exact time since your relationship started.
 *   **Remote Config:** Change the relationship start date directly from the app.
+*   **Push Notifications:** Receive alerts even when the app is killed (requires `notify.js` bridge).
 
 ## 🚀 Getting Started on Windows
 
@@ -30,7 +31,7 @@ Before you begin, ensure you have the following installed:
     npm install
     ```
 
-### 3. Running the App
+### 3. Running the App (The Client)
 
 1.  Start the development server:
     ```powershell
@@ -41,6 +42,18 @@ Before you begin, ensure you have the following installed:
     *   Open the **Expo Go** app.
     *   Scan the QR code (on Android, use the Expo app's scanner; on iOS, use the standard Camera app).
     *   The app will load on your phone!
+
+### 4. Running the Notification Bridge (The Server)
+
+To enable notifications when the app is **closed**, you must run the notification watcher script on your computer.
+
+1.  Open a **second** PowerShell/Command Prompt window in the same folder.
+2.  Run the notification bridge:
+    ```powershell
+    node server/notify.js
+    ```
+3.  You should see: `💜 Cosmic Notification Bridge Started...`
+4.  Keep this window open! As long as this is running, hearts will trigger push notifications to all devices.
 
 ### 🔧 Troubleshooting on Windows
 
@@ -55,7 +68,7 @@ Before you begin, ensure you have the following installed:
 *   **Frontend:** React Native, Expo
 *   **Backend:** Firebase Realtime Database
 *   **Styling:** Expo Linear Gradient, Animated API
-*   **Notifications:** Expo Notifications
+*   **Notifications:** Expo Notifications + Node.js Bridge
 
 ---
 *Built with ❤️ for long-distance connection.*
